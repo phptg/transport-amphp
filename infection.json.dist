@@ -1,0 +1,17 @@
+{
+    "source": {
+        "directories": [
+            "src"
+        ]
+    },
+    "logs": {
+        "text": "runtime/infection/run.log",
+        "stryker": {
+            "report": "master"
+        }
+    },
+    "tmpDir": "runtime/infection",
+    "mutators": {
+        "@default": true
+    }
+}
