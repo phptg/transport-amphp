@@ -25,7 +25,8 @@
         }
     ],
     "require": {
-        "php": "8.2 - 8.5"
+        "php": "8.2 - 8.6",
+        "phptg/bot-api": "^0.23.1"
     },
     "require-dev": {
         "bamarni/composer-bin-plugin": "^1.8.3",
