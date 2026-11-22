@@ -26,14 +26,16 @@
     ],
     "require": {
         "php": "8.2 - 8.6",
-        "phptg/bot-api": "^0.23.1"
+        "amphp/http-client": "^5.3.8",
+        "phptg/bot-api": "^0.24.1"
     },
     "require-dev": {
-        "bamarni/composer-bin-plugin": "^1.8.3",
+        "amphp/http-tunnel": "^2.0",
+        "bamarni/composer-bin-plugin": "^1.9.1",
         "llm/skills": "^1.21",
         "phpstan/phpstan": "^2.3.7",
-        "phpstan/phpstan-phpunit": "^2.1.1",
-        "phpunit/phpunit": "^11.5.46",
+        "phpstan/phpstan-phpunit": "^2.1.2",
+        "phpunit/phpunit": "^11.5.58",
         "shipmonk/dead-code-detector": "^1.4.2"
     },
     "autoload": {
