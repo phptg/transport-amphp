@@ -23,6 +23,7 @@ use Phptg\BotApi\Transport\DownloadFileException;
 use Phptg\BotApi\Transport\MimeTypeResolver\ApacheMimeTypeResolver;
 use Phptg\BotApi\Transport\MimeTypeResolver\MimeTypeResolverInterface;
 use Phptg\BotApi\Transport\TransportInterface;
+use Phptg\BotApi\Type\InputFile;
 
 use function is_string;
 use function sprintf;
@@ -46,28 +47,29 @@ final readonly class AmpTransport implements TransportInterface
      * @param HttpClient|null $client HTTP client for making requests. `null` means a client built with
      * {@see HttpClientBuilder::buildDefault()} is used. A custom client may be used, for example, to tune
      * the connection pool or add interceptors.
-     * @param float|null $tcpConnectTimeout Timeout in seconds for establishing the TCP connection for each request.
-     * `0` means no timeout, `null` means the HTTP client default is used.
-     * @param float|null $tlsHandshakeTimeout Timeout in seconds for the TLS handshake for each request. `0` means
-     * no timeout, `null` means the HTTP client default is used.
-     * @param float|null $transferTimeout Timeout in seconds for the entire transfer of API requests, i.e. `get()`,
+     * @param float $tcpConnectTimeout Timeout in seconds for establishing the TCP connection for each request.
+     * `0` means no timeout. Defaults to `10`.
+     * @param float $tlsHandshakeTimeout Timeout in seconds for the TLS handshake for each request. `0` means
+     * no timeout. Defaults to `10`.
+     * @param float $transferTimeout Timeout in seconds for the entire transfer of API requests, i.e. `get()`,
      * `post()` and `postWithFiles()`, not counting the TCP connect and TLS handshake. File downloads use
-     * `$downloadTransferTimeout` instead. `0` means no timeout, `null` means the HTTP client default is used.
-     * @param float|null $downloadTransferTimeout Timeout in seconds for the entire transfer of file downloads,
-     * i.e. `downloadFile()` and `downloadFileStream()`. `0` means no timeout, `null` means the HTTP client
-     * default is used.
-     * @param float|null $inactivityTimeout Timeout in seconds since the last data was received before the request
-     * fails due to inactivity. Applies to all requests. `0` means no timeout, `null` means the HTTP client
-     * default is used.
+     * `$downloadTransferTimeout` instead. `0` means no timeout. Defaults to `0`.
+     * @param float $downloadTransferTimeout Timeout in seconds for the entire transfer of file downloads,
+     * i.e. `downloadFile()` and `downloadFileStream()`. `0` means no timeout. Defaults to `300`: unlike API
+     * requests, downloads get data continuously, so the limit only needs to cover the download time of a file,
+     * up to 20 MB, on a slow connection.
+     * @param float $inactivityTimeout Timeout in seconds since the last data was received before the request
+     * fails due to inactivity. Applies to all requests. `0` means no timeout. Defaults to `0`. If you use
+     * neither long polling nor file uploads, a value of a few seconds helps to detect stalled connections.
      */
     public function __construct(
         private MimeTypeResolverInterface $mimeTypeResolver = new ApacheMimeTypeResolver(),
         ?HttpClient $client = null,
-        private ?float $tcpConnectTimeout = null,
-        private ?float $tlsHandshakeTimeout = null,
-        private ?float $transferTimeout = null,
-        private ?float $downloadTransferTimeout = null,
-        private ?float $inactivityTimeout = null,
+        private float $tcpConnectTimeout = 10.0,
+        private float $tlsHandshakeTimeout = 10.0,
+        private float $transferTimeout = 0.0,
+        private float $downloadTransferTimeout = 300.0,
+        private float $inactivityTimeout = 0.0,
     ) {
         $this->client = $client ?? HttpClientBuilder::buildDefault();
     }
@@ -91,19 +93,11 @@ final readonly class AmpTransport implements TransportInterface
         }
 
         foreach ($files as $key => $file) {
-            $mimeType = $this->mimeTypeResolver->resolve($file);
-            if (is_string($file->pathOrResource)) {
-                $form->addFile($key, $file->pathOrResource, $mimeType);
-            } else {
-                $form->addStream(
-                    $key,
-                    StreamedContent::fromStream(
-                        content: new ReadableResourceStream($file->pathOrResource),
-                        contentType: $mimeType,
-                    ),
-                    $file->filename(),
-                );
-            }
+            $form->addStream(
+                $key,
+                $this->createFileContent($file),
+                $file->filename() ?? '',
+            );
         }
 
         return $this->send($url, 'POST', $form);
@@ -119,17 +113,14 @@ final readonly class AmpTransport implements TransportInterface
 
         /** @var resource $stream `php://temp` always opens successfully. */
         $stream = fopen('php://temp', 'r+b');
-        do {
-            try {
-                $chunk = $body->read();
-            } catch (StreamException $e) {
-                throw new DownloadFileException($e->getMessage(), previous: $e);
+
+        try {
+            while (($chunk = $body->read()) !== null) {
+                fwrite($stream, $chunk);
             }
-            if ($chunk === null) {
-                break;
-            }
-            fwrite($stream, $chunk);
-        } while (true);
+        } catch (StreamException $e) {
+            throw new DownloadFileException($e->getMessage(), previous: $e);
+        }
         rewind($stream);
 
         return $stream;
@@ -151,27 +142,18 @@ final readonly class AmpTransport implements TransportInterface
     public function downloadFileStream(string $url, Cancellation $cancellation = new NullCancellation()): Payload
     {
         $request = new Request($url, 'GET');
-
-        if ($this->tlsHandshakeTimeout !== null) {
-            $request->setTlsHandshakeTimeout($this->tlsHandshakeTimeout);
-        }
-        if ($this->tcpConnectTimeout !== null) {
-            $request->setTcpConnectTimeout($this->tcpConnectTimeout);
-        }
-        if ($this->downloadTransferTimeout !== null) {
-            $request->setTransferTimeout($this->downloadTransferTimeout);
-        }
-        if ($this->inactivityTimeout !== null) {
-            $request->setInactivityTimeout($this->inactivityTimeout);
-        }
+        $request->setBodySizeLimit(20971520); // 20 MB
+        $request->setTlsHandshakeTimeout($this->tlsHandshakeTimeout);
+        $request->setTcpConnectTimeout($this->tcpConnectTimeout);
+        $request->setTransferTimeout($this->downloadTransferTimeout);
+        $request->setInactivityTimeout($this->inactivityTimeout);
 
         $response = $this->client->request($request, $cancellation);
         if ($response->getStatus() !== 200) {
             $response->getBody()->close();
             throw new HttpException(
                 sprintf(
-                    'Failed to download file "%s". HTTP status code: %d.',
-                    $url,
+                    'Failed to download file. HTTP status code: %d.',
                     $response->getStatus(),
                 ),
             );
@@ -204,7 +186,10 @@ final readonly class AmpTransport implements TransportInterface
         array $headers = [],
     ): ApiResponse {
         $request = new Request($url, $method);
-        $request->setBodySizeLimit(20971520); // 20 MB
+        $request->setTlsHandshakeTimeout($this->tlsHandshakeTimeout);
+        $request->setTcpConnectTimeout($this->tcpConnectTimeout);
+        $request->setTransferTimeout($this->transferTimeout);
+        $request->setInactivityTimeout($this->inactivityTimeout);
 
         if ($body !== '') {
             $request->setBody($body);
@@ -214,24 +199,42 @@ final readonly class AmpTransport implements TransportInterface
             $request->setHeaders($headers);
         }
 
-        if ($this->tlsHandshakeTimeout !== null) {
-            $request->setTlsHandshakeTimeout($this->tlsHandshakeTimeout);
-        }
-        if ($this->tcpConnectTimeout !== null) {
-            $request->setTcpConnectTimeout($this->tcpConnectTimeout);
-        }
-        if ($this->transferTimeout !== null) {
-            $request->setTransferTimeout($this->transferTimeout);
-        }
-        if ($this->inactivityTimeout !== null) {
-            $request->setInactivityTimeout($this->inactivityTimeout);
-        }
-
         $response = $this->client->request($request);
 
         return new ApiResponse(
             $response->getStatus(),
             $response->getBody()->buffer(),
+        );
+    }
+
+    /**
+     * Creates the request body content for a file to upload.
+     *
+     * @param InputFile $file The file to upload.
+     *
+     * @return HttpContent The request body content for the file.
+     *
+     * @throws HttpException If the file could not be opened.
+     */
+    private function createFileContent(InputFile $file): HttpContent
+    {
+        $mimeType = $this->mimeTypeResolver->resolve($file);
+
+        if (is_string($file->pathOrResource)) {
+            return StreamedContent::fromFile($file->pathOrResource, $mimeType);
+        }
+
+        $metadata = stream_get_meta_data($file->pathOrResource);
+        if (isset($metadata['uri']) && !str_contains($metadata['uri'], '://')) {
+            return StreamedContent::fromFile($metadata['uri'], $mimeType);
+        }
+
+        if ($metadata['seekable']) {
+            rewind($file->pathOrResource);
+        }
+        return StreamedContent::fromStream(
+            content: new ReadableResourceStream($file->pathOrResource),
+            contentType: $mimeType,
         );
     }
 }
