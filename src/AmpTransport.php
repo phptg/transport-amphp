@@ -25,6 +25,7 @@ use Phptg\BotApi\Transport\MimeTypeResolver\MimeTypeResolverInterface;
 use Phptg\BotApi\Transport\TransportInterface;
 
 use function is_string;
+use function sprintf;
 
 /**
  * HTTP transport for the Telegram Bot API based on the Amp HTTP client.
@@ -118,9 +119,17 @@ final readonly class AmpTransport implements TransportInterface
 
         /** @var resource $stream `php://temp` always opens successfully. */
         $stream = fopen('php://temp', 'r+b');
-        while (($chunk = $body->read()) !== null) {
+        do {
+            try {
+                $chunk = $body->read();
+            } catch (StreamException $e) {
+                throw new DownloadFileException($e->getMessage(), previous: $e);
+            }
+            if ($chunk === null) {
+                break;
+            }
             fwrite($stream, $chunk);
-        }
+        } while (true);
         rewind($stream);
 
         return $stream;
@@ -136,7 +145,7 @@ final readonly class AmpTransport implements TransportInterface
      * @return Payload The response body as a stream.
      *
      * @throws HttpException If an error occurred while performing the request, e.g. the connection failed,
-     * a timeout was reached, or the server returned an invalid response.
+     * a timeout was reached, or the server returned a non-200 response.
      * @throws CancelledException If the request has been cancelled via the cancellation token.
      */
     public function downloadFileStream(string $url, Cancellation $cancellation = new NullCancellation()): Payload
@@ -156,7 +165,19 @@ final readonly class AmpTransport implements TransportInterface
             $request->setInactivityTimeout($this->inactivityTimeout);
         }
 
-        return $this->client->request($request, $cancellation)->getBody();
+        $response = $this->client->request($request, $cancellation);
+        if ($response->getStatus() !== 200) {
+            $response->getBody()->close();
+            throw new HttpException(
+                sprintf(
+                    'Failed to download file "%s". HTTP status code: %d.',
+                    $url,
+                    $response->getStatus(),
+                ),
+            );
+        }
+
+        return $response->getBody();
     }
 
     /**
@@ -169,12 +190,12 @@ final readonly class AmpTransport implements TransportInterface
      * @param array<non-empty-string, string> $headers The request headers as an associative array
      * (header name => header value).
      *
+     * @return ApiResponse The API response.
+     *
      * @throws HttpException If an error occurred while performing the request, e.g. the connection failed,
      * a timeout was reached, or the server returned an invalid response.
      * @throws BufferException If the response body exceeds the buffer limit.
      * @throws StreamException If an error occurred while reading the response body.
-     *
-     * @return ApiResponse The API response.
      */
     private function send(
         string $url,
@@ -183,6 +204,7 @@ final readonly class AmpTransport implements TransportInterface
         array $headers = [],
     ): ApiResponse {
         $request = new Request($url, $method);
+        $request->setBodySizeLimit(20971520); // 20 MB
 
         if ($body !== '') {
             $request->setBody($body);
