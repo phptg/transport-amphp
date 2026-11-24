@@ -27,12 +27,12 @@
     "require": {
         "php": "8.2 - 8.6",
         "amphp/http-client": "^5.3.8",
-        "phptg/bot-api": "^0.24.1"
+        "phptg/bot-api": "^0.24.2"
     },
     "require-dev": {
-        "amphp/http-tunnel": "^2.0",
+        "amphp/http-tunnel": "^2.0.1",
         "bamarni/composer-bin-plugin": "^1.9.1",
-        "llm/skills": "^1.21",
+        "llm/skills": "^1.23",
         "phpstan/phpstan": "^2.3.7",
         "phpstan/phpstan-phpunit": "^2.1.2",
         "phpunit/phpunit": "^11.5.58",
