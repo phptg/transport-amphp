@@ -59,8 +59,13 @@ final readonly class AmpTransport implements TransportInterface
      * requests, downloads get data continuously, so the limit only needs to cover the download time of a file,
      * up to 20 MB, on a slow connection.
      * @param float $inactivityTimeout Timeout in seconds since the last data was received before the request
-     * fails due to inactivity. Applies to all requests. `0` means no timeout. Defaults to `0`. If you use
+     * fails due to inactivity. Applies to `get()`, `post()` and `postWithFiles()`. File downloads use
+     * `$downloadInactivityTimeout` instead. `0` means no timeout. Defaults to `0`. If you use
      * neither long polling nor file uploads, a value of a few seconds helps to detect stalled connections.
+     * @param float $downloadInactivityTimeout Timeout in seconds since the last data was received before
+     * a file download, i.e. `downloadFile()` or `downloadFileStream()`, fails due to inactivity. `0` means
+     * no timeout. Defaults to `10`: downloads get data continuously, so a pause means a stalled connection.
+     * Unlike `$downloadTransferTimeout`, this limit does not depend on the file size and connection speed.
      */
     public function __construct(
         private MimeTypeResolverInterface $mimeTypeResolver = new ApacheMimeTypeResolver(),
@@ -70,6 +75,7 @@ final readonly class AmpTransport implements TransportInterface
         private float $transferTimeout = 0.0,
         private float $downloadTransferTimeout = 300.0,
         private float $inactivityTimeout = 0.0,
+        private float $downloadInactivityTimeout = 10.0,
     ) {
         $this->client = $client ?? HttpClientBuilder::buildDefault();
     }
@@ -146,7 +152,7 @@ final readonly class AmpTransport implements TransportInterface
         $request->setTlsHandshakeTimeout($this->tlsHandshakeTimeout);
         $request->setTcpConnectTimeout($this->tcpConnectTimeout);
         $request->setTransferTimeout($this->downloadTransferTimeout);
-        $request->setInactivityTimeout($this->inactivityTimeout);
+        $request->setInactivityTimeout($this->downloadInactivityTimeout);
 
         $response = $this->client->request($request, $cancellation);
         if ($response->getStatus() !== 200) {
