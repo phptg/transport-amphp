@@ -27,7 +27,7 @@
     "require": {
         "php": "8.2 - 8.6",
         "amphp/http-client": "^5.3.8",
-        "phptg/bot-api": "^0.24.2"
+        "phptg/bot-api": "dev-master as 0.24"
     },
     "require-dev": {
         "amphp/http-tunnel": "^2.0.1",
@@ -37,6 +37,9 @@
         "phpstan/phpstan-phpunit": "^2.1.2",
         "phpunit/phpunit": "^11.5.58",
         "shipmonk/dead-code-detector": "^1.4.2"
+    },
+    "suggest": {
+        "amphp/file": "Required to upload a file passed as a path or a regular file resource."
     },
     "autoload": {
         "psr-4": {

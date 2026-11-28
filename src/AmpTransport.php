@@ -17,7 +17,6 @@ use Amp\Http\Client\HttpContent;
 use Amp\Http\Client\HttpException;
 use Amp\Http\Client\Request;
 use Amp\Http\Client\StreamedContent;
-use Amp\NullCancellation;
 use Phptg\BotApi\Transport\ApiResponse;
 use Phptg\BotApi\Transport\DownloadFileException;
 use Phptg\BotApi\Transport\MimeTypeResolver\ApacheMimeTypeResolver;
@@ -35,6 +34,10 @@ use function sprintf;
  * To process a file chunk by chunk without buffering, use {@see AmpTransport::downloadFileStream()}, which is
  * specific to this transport.
  *
+ * {@see AmpTransport::postWithFiles()} uploads a local file, i.e. an {@see InputFile} with a path or a resource
+ * of a regular file, using the `amphp/file` package, which is not installed with this package and must be
+ * installed separately to upload such files.
+ *
  * @api
  */
 final readonly class AmpTransport implements TransportInterface
@@ -46,48 +49,79 @@ final readonly class AmpTransport implements TransportInterface
      * to {@see ApacheMimeTypeResolver}.
      * @param HttpClient|null $client HTTP client for making requests. `null` means a client built with
      * {@see HttpClientBuilder::buildDefault()} is used. A custom client may be used, for example, to tune
-     * the connection pool or add interceptors.
+     * the connection pool or add interceptors. Note that the default client retries GET requests, i.e.
+     * `get()`, `longPoll()` and file downloads, up to twice on a timeout, so a stalled such request fails
+     * after up to three times the corresponding timeout.
      * @param float $tcpConnectTimeout Timeout in seconds for establishing the TCP connection for each request.
      * `0` means no timeout. Defaults to `10`.
      * @param float $tlsHandshakeTimeout Timeout in seconds for the TLS handshake for each request. `0` means
      * no timeout. Defaults to `10`.
-     * @param float $transferTimeout Timeout in seconds for the entire transfer of API requests, i.e. `get()`,
-     * `post()` and `postWithFiles()`, not counting the TCP connect and TLS handshake. File downloads use
-     * `$downloadTransferTimeout` instead. `0` means no timeout. Defaults to `0`.
+     * @param float $apiTransferTimeout Timeout in seconds for the entire transfer of API requests without
+     * file uploads, i.e. `get()` and `post()`, not counting the TCP connect and TLS handshake. Defaults to `60`:
+     * the server responds within a couple of seconds, except for methods with a file passed by URL, e.g.
+     * `sendPhoto`, where the server downloads the file from the third-party server first, which takes longer
+     * on a slow host. Does not apply to `postWithFiles()`, see `$uploadTransferTimeout`, to long polling
+     * requests, see `$longPollingTimeoutMargin`, or to file downloads, see `$downloadTransferTimeout`.
+     * `0` means no timeout. API requests have no separate inactivity timeout: the server sends nothing until
+     * it has processed the request, so such a limit would either fire together with the transfer timeout or
+     * cut off a slow upload.
+     * @param float $uploadTransferTimeout Timeout in seconds for the entire transfer of API requests with
+     * file uploads, i.e. `postWithFiles()`. Defaults to `600`: files are up to 50 MB and the upload speed
+     * depends on the connection, so the limit only needs to cover the upload time of the largest file on
+     * a slow connection. `0` means no timeout.
+     * @param float $longPollingTimeoutMargin Timeout in seconds added to the long polling timeout, i.e. the
+     * maximum number of seconds the server may hold a `longPoll()` request, to get the transfer timeout for
+     * the request. Once the server has responded, the response body is small, so the margin only needs to cover
+     * its transfer; a stalled connection is detected once it has passed. `0` means the transfer timeout equals
+     * the long polling timeout, leaving no time for the response to arrive. Defaults to `10`.
      * @param float $downloadTransferTimeout Timeout in seconds for the entire transfer of file downloads,
      * i.e. `downloadFile()` and `downloadFileStream()`. `0` means no timeout. Defaults to `300`: unlike API
      * requests, downloads get data continuously, so the limit only needs to cover the download time of a file,
-     * up to 20 MB, on a slow connection.
-     * @param float $inactivityTimeout Timeout in seconds since the last data was received before the request
-     * fails due to inactivity. Applies to `get()`, `post()` and `postWithFiles()`. File downloads use
-     * `$downloadInactivityTimeout` instead. `0` means no timeout. Defaults to `0`. If you use
-     * neither long polling nor file uploads, a value of a few seconds helps to detect stalled connections.
+     * up to 20 MB on the default Bot API server, on a slow connection. Files can only be larger on a local
+     * Bot API server, see `$downloadBodySizeLimit`.
      * @param float $downloadInactivityTimeout Timeout in seconds since the last data was received before
      * a file download, i.e. `downloadFile()` or `downloadFileStream()`, fails due to inactivity. `0` means
      * no timeout. Defaults to `10`: downloads get data continuously, so a pause means a stalled connection.
      * Unlike `$downloadTransferTimeout`, this limit does not depend on the file size and connection speed.
+     * @param int $downloadBodySizeLimit Maximum size in bytes of the body downloaded by `downloadFile()`
+     * and `downloadFileStream()`. `0` means no limit. Defaults to 21 MiB: a margin over the 20 MB the
+     * default Bot API server serves; raise it or set to `0` for a local Bot API server, which serves files
+     * of any size. Otherwise keep it finite: `0` slows down HTTP/2 downloads.
      */
     public function __construct(
         private MimeTypeResolverInterface $mimeTypeResolver = new ApacheMimeTypeResolver(),
         ?HttpClient $client = null,
         private float $tcpConnectTimeout = 10.0,
         private float $tlsHandshakeTimeout = 10.0,
-        private float $transferTimeout = 0.0,
+        private float $apiTransferTimeout = 60.0,
+        private float $uploadTransferTimeout = 600.0,
+        private float $longPollingTimeoutMargin = 10.0,
         private float $downloadTransferTimeout = 300.0,
-        private float $inactivityTimeout = 0.0,
         private float $downloadInactivityTimeout = 10.0,
+        private int $downloadBodySizeLimit = 22020096, // 21 * 1024 * 1024
     ) {
         $this->client = $client ?? HttpClientBuilder::buildDefault();
     }
 
     public function get(string $url): ApiResponse
     {
-        return $this->send($url, 'GET');
+        return $this->send($url, 'GET', transferTimeout: $this->apiTransferTimeout);
+    }
+
+    public function longPoll(string $url, int $timeout): ApiResponse
+    {
+        return $this->send($url, 'GET', transferTimeout: $timeout + $this->longPollingTimeoutMargin);
     }
 
     public function post(string $url, string $body, array $headers): ApiResponse
     {
-        return $this->send($url, 'POST', $body, $headers);
+        return $this->send(
+            $url,
+            'POST',
+            transferTimeout: $this->apiTransferTimeout,
+            body: $body,
+            headers: $headers,
+        );
     }
 
     public function postWithFiles(string $url, array $data, array $files): ApiResponse
@@ -106,7 +140,12 @@ final readonly class AmpTransport implements TransportInterface
             );
         }
 
-        return $this->send($url, 'POST', $form);
+        return $this->send(
+            $url,
+            'POST',
+            transferTimeout: $this->uploadTransferTimeout,
+            body: $form,
+        );
     }
 
     public function downloadFile(string $url): mixed
@@ -137,7 +176,7 @@ final readonly class AmpTransport implements TransportInterface
      * so it can be read chunk by chunk via `Payload::read()`.
      *
      * @param string $url The URL of the file to download.
-     * @param Cancellation $cancellation The cancellation token used to abort the request.
+     * @param Cancellation|null $cancellation The cancellation token used to abort the request.
      *
      * @return Payload The response body as a stream.
      *
@@ -145,10 +184,10 @@ final readonly class AmpTransport implements TransportInterface
      * a timeout was reached, or the server returned a non-200 response.
      * @throws CancelledException If the request has been cancelled via the cancellation token.
      */
-    public function downloadFileStream(string $url, Cancellation $cancellation = new NullCancellation()): Payload
+    public function downloadFileStream(string $url, ?Cancellation $cancellation = null): Payload
     {
         $request = new Request($url, 'GET');
-        $request->setBodySizeLimit(20971520); // 20 MB
+        $request->setBodySizeLimit($this->downloadBodySizeLimit);
         $request->setTlsHandshakeTimeout($this->tlsHandshakeTimeout);
         $request->setTcpConnectTimeout($this->tcpConnectTimeout);
         $request->setTransferTimeout($this->downloadTransferTimeout);
@@ -173,6 +212,8 @@ final readonly class AmpTransport implements TransportInterface
      *
      * @param string $url The URL to request.
      * @param "GET"|"POST" $method The HTTP method.
+     * @param float $transferTimeout Timeout in seconds for the entire transfer of the request, not counting
+     * the TCP connect and TLS handshake. `0` means no timeout.
      * @param string|HttpContent $body The request body: a string or an `HttpContent` instance, e.g. a form
      * with file uploads.
      * @param array<non-empty-string, string> $headers The request headers as an associative array
@@ -188,14 +229,15 @@ final readonly class AmpTransport implements TransportInterface
     private function send(
         string $url,
         string $method,
+        float $transferTimeout,
         string|HttpContent $body = '',
         array $headers = [],
     ): ApiResponse {
         $request = new Request($url, $method);
         $request->setTlsHandshakeTimeout($this->tlsHandshakeTimeout);
         $request->setTcpConnectTimeout($this->tcpConnectTimeout);
-        $request->setTransferTimeout($this->transferTimeout);
-        $request->setInactivityTimeout($this->inactivityTimeout);
+        $request->setTransferTimeout($transferTimeout);
+        $request->setInactivityTimeout($transferTimeout);
 
         if ($body !== '') {
             $request->setBody($body);
@@ -214,7 +256,9 @@ final readonly class AmpTransport implements TransportInterface
     }
 
     /**
-     * Creates the request body content for a file to upload.
+     * Creates the request body content for a file to upload. A path or a resource of a regular file is streamed
+     * with {@see StreamedContent::fromFile()}, which requires the optional `amphp/file` package, see the class
+     * description; any other resource is streamed with {@see ReadableResourceStream}.
      *
      * @param InputFile $file The file to upload.
      *
@@ -231,13 +275,14 @@ final readonly class AmpTransport implements TransportInterface
         }
 
         $metadata = stream_get_meta_data($file->pathOrResource);
-        if (isset($metadata['uri']) && !str_contains($metadata['uri'], '://')) {
+        if ($metadata['wrapper_type'] === 'plainfile' && isset($metadata['uri'])) {
             return StreamedContent::fromFile($metadata['uri'], $mimeType);
         }
 
         if ($metadata['seekable']) {
             rewind($file->pathOrResource);
         }
+
         return StreamedContent::fromStream(
             content: new ReadableResourceStream($file->pathOrResource),
             contentType: $mimeType,
