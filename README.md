@@ -11,7 +11,7 @@
 [![Build status](https://github.com/phptg/transport-amphp/actions/workflows/build.yml/badge.svg)](https://github.com/phptg/transport-amphp/actions/workflows/build.yml)
 [![Coverage Status](https://coveralls.io/repos/github/phptg/transport-amphp/badge.svg)](https://coveralls.io/github/phptg/transport-amphp)
 [![Mutation score](https://img.shields.io/endpoint?style=flat&url=https%3A%2F%2Fbadge-api.stryker-mutator.io%2Fgithub.com%2Fphptg%2Ftransport-amphp%2Fmaster)](https://dashboard.stryker-mutator.io/reports/github.com/phptg/transport-amphp/master)
-[![Static analysis](https://github.com/phptg/transport-amphp/actions/workflows/psalm.yml/badge.svg?branch=master)](https://github.com/phptg/transport-amphp/actions/workflows/psalm.yml?query=branch%3Amaster)
+[![Static analysis](https://github.com/phptg/transport-amphp/actions/workflows/static.yml/badge.svg?branch=master)](https://github.com/phptg/transport-amphp/actions/workflows/static.yml?query=branch%3Amaster)
 
 > [!IMPORTANT]
 > This project is developed and maintained by [Sergei Predvoditelev](https://github.com/vjik).
