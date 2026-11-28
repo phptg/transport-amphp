@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Phptg\TransportAmphp;
 
-use Amp\ByteStream\BufferException;
 use Amp\ByteStream\Payload;
 use Amp\ByteStream\ReadableResourceStream;
 use Amp\ByteStream\StreamException;
@@ -26,6 +25,7 @@ use Phptg\BotApi\Type\InputFile;
 
 use function is_string;
 use function sprintf;
+use function strlen;
 
 /**
  * HTTP transport for the Telegram Bot API based on the Amp HTTP client.
@@ -49,9 +49,9 @@ final readonly class AmpTransport implements TransportInterface
      * to {@see ApacheMimeTypeResolver}.
      * @param HttpClient|null $client HTTP client for making requests. `null` means a client built with
      * {@see HttpClientBuilder::buildDefault()} is used. A custom client may be used, for example, to tune
-     * the connection pool or add interceptors. Note that the default client retries GET requests, i.e.
-     * `get()`, `longPoll()` and file downloads, up to twice on a timeout, so a stalled such request fails
-     * after up to three times the corresponding timeout.
+     * the connection pool or add interceptors. The default client retries GET requests, i.e. `get()`,
+     * `longPoll()` and file downloads, up to twice on any `HttpException`, e.g. a timeout, so such a request
+     * may take up to three times the corresponding timeout; a POST request is retried only if not sent yet.
      * @param float $tcpConnectTimeout Timeout in seconds for establishing the TCP connection for each request.
      * `0` means no timeout. Defaults to `10`.
      * @param float $tlsHandshakeTimeout Timeout in seconds for the TLS handshake for each request. `0` means
@@ -161,7 +161,9 @@ final readonly class AmpTransport implements TransportInterface
 
         try {
             while (($chunk = $body->read()) !== null) {
-                fwrite($stream, $chunk);
+                if (fwrite($stream, $chunk) !== strlen($chunk)) {
+                    throw new DownloadFileException('Failed to write the downloaded file to the temporary stream.');
+                }
             }
         } catch (StreamException $e) {
             throw new DownloadFileException($e->getMessage(), previous: $e);
@@ -223,7 +225,6 @@ final readonly class AmpTransport implements TransportInterface
      *
      * @throws HttpException If an error occurred while performing the request, e.g. the connection failed,
      * a timeout was reached, or the server returned an invalid response.
-     * @throws BufferException If the response body exceeds the buffer limit.
      * @throws StreamException If an error occurred while reading the response body.
      */
     private function send(
